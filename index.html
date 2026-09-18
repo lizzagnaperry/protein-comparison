@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Protein Structure Comparison</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.0.4/3Dmol-min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 0 20px;
+            color: #222;
+        }
+        h1 { font-size: 1.5rem; }
+        .controls {
+            display: flex;
+            gap: 20px;
+            align-items: end;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+        .field label {
+            display: block;
+            font-size: 0.85rem;
+            color: #555;
+            margin-bottom: 4px;
+        }
+        select {
+            padding: 8px;
+            font-size: 1rem;
+            min-width: 260px;
+        }
+        button {
+            padding: 9px 20px;
+            font-size: 1rem;
+            background: #2b6cb0;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:disabled { background: #999; cursor: default; }
+        .results {
+            display: none;
+            border-top: 1px solid #ddd;
+            padding-top: 20px;
+        }
+        .metrics {
+            display: flex;
+            gap: 32px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .metric {
+            background: #f5f7fa;
+            border-radius: 8px;
+            padding: 14px 20px;
+        }
+        .metric .value { font-size: 1.6rem; font-weight: 600; }
+        .metric .label { font-size: 0.8rem; color: #666; }
+        .functions {
+            display: flex;
+            gap: 24px;
+            margin-bottom: 20px;
+        }
+        .functions > div { flex: 1; }
+        .functions h3 { margin-bottom: 4px; font-size: 1rem; }
+        .functions p { font-size: 0.9rem; color: #444; margin-top: 0; }
+        .viewers {
+            display: flex;
+            gap: 20px;
+        }
+        .viewer-container { flex: 1; }
+        .viewer-container h4 { margin-bottom: 6px; font-size: 0.9rem; }
+        .viewer-box {
+            width: 100%;
+            height: 360px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            position: relative;
+        }
+        .error { color: #c0392b; }
+        .loading { color: #666; font-style: italic; }
+    </style>
+</head>
+<body>
+    <h1>Protein Structure Comparison</h1>
+    <p style="color:#555">
+        Compares two proteins' sequences and predicted 3D structures
+        (from the <a href="https://alphafold.ebi.ac.uk/" target="_blank">AlphaFold Protein Structure Database</a>)
+        to explore how similar they are and how that relates to their function.
+    </p>
+
+    <div class="controls">
+        <div class="field">
+            <label for="protein-a">Protein A</label>
+            <select id="protein-a">
+                {% for id, info in proteins.items() %}
+                <option value="{{ id }}">{{ info.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="field">
+            <label for="protein-b">Protein B</label>
+            <select id="protein-b">
+                {% for id, info in proteins.items() %}
+                <option value="{{ id }}" {% if loop.index == 2 %}selected{% endif %}>{{ info.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button id="compare-btn" onclick="runComparison()">Compare</button>
+    </div>
+
+    <p id="status"></p>
+
+    <div class="results" id="results">
+        <div class="metrics">
+            <div class="metric">
+                <div class="value" id="identity-value">--</div>
+                <div class="label">Sequence identity</div>
+            </div>
+            <div class="metric">
+                <div class="value" id="rmsd-value">--</div>
+                <div class="label">Structural RMSD (Å, lower = more similar)</div>
+            </div>
+            <div class="metric">
+                <div class="value" id="pairs-value">--</div>
+                <div class="label">Residues compared</div>
+            </div>
+        </div>
+
+        <div class="functions">
+            <div>
+                <h3 id="name-a"></h3>
+                <p id="function-a"></p>
+            </div>
+            <div>
+                <h3 id="name-b"></h3>
+                <p id="function-b"></p>
+            </div>
+        </div>
+
+        <div class="viewers">
+            <div class="viewer-container">
+                <h4 id="viewer-label-a"></h4>
+                <div class="viewer-box" id="viewer-a"></div>
+            </div>
+            <div class="viewer-container">
+                <h4 id="viewer-label-b"></h4>
+                <div class="viewer-box" id="viewer-b"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function loadViewer(elementId, uniprotId) {
+            const element = document.getElementById(elementId);
+            element.innerHTML = "";
+            const viewer = $3Dmol.createViewer(element, { backgroundColor: "white" });
+            fetch(`/api/structure/${uniprotId}`)
+                .then(res => res.text())
+                .then(pdbData => {
+                    viewer.addModel(pdbData, "pdb");
+                    viewer.setStyle({}, { cartoon: { color: "spectrum" } });
+                    viewer.zoomTo();
+                    viewer.render();
+                });
+        }
+
+        function runComparison() {
+            const proteinA = document.getElementById("protein-a").value;
+            const proteinB = document.getElementById("protein-b").value;
+            const button = document.getElementById("compare-btn");
+            const status = document.getElementById("status");
+            const results = document.getElementById("results");
+
+            if (proteinA === proteinB) {
+                status.textContent = "Pick two different proteins to compare.";
+                status.className = "error";
+                return;
+            }
+
+            button.disabled = true;
+            status.textContent = "Fetching structures and comparing... (this hits the AlphaFold API, may take a few seconds)";
+            status.className = "loading";
+            results.style.display = "none";
+
+            fetch(`/api/compare?protein_a=${proteinA}&protein_b=${proteinB}`)
+                .then(res => res.json())
+                .then(data => {
+                    button.disabled = false;
+                    if (data.error) {
+                        status.textContent = "Error: " + data.error;
+                        status.className = "error";
+                        return;
+                    }
+                    status.textContent = "";
+
+                    document.getElementById("identity-value").textContent = data.sequence_identity_percent + "%";
+                    document.getElementById("rmsd-value").textContent = data.structural_rmsd_angstrom + " Å";
+                    document.getElementById("pairs-value").textContent = data.compared_residue_pairs;
+
+                    document.getElementById("name-a").textContent = data.protein_a.name;
+                    document.getElementById("function-a").textContent = data.protein_a.function;
+                    document.getElementById("name-b").textContent = data.protein_b.name;
+                    document.getElementById("function-b").textContent = data.protein_b.function;
+
+                    document.getElementById("viewer-label-a").textContent = data.protein_a.name;
+                    document.getElementById("viewer-label-b").textContent = data.protein_b.name;
+
+                    results.style.display = "block";
+
+                    loadViewer("viewer-a", data.protein_a.id);
+                    loadViewer("viewer-b", data.protein_b.id);
+                })
+                .catch(err => {
+                    button.disabled = false;
+                    status.textContent = "Request failed: " + err;
+                    status.className = "error";
+                });
+        }
+    </script>
+</body>
+</html>
